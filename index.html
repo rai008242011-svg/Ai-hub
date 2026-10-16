@@ -59,6 +59,7 @@ button:active,button.on{background:var(--c);color:#000}
     <div class="btns">
       <button class="talk" id="bk">話す</button>
       <button id="bx">文字</button>
+      <button id="bg">割込ON</button>
       <button id="bt">テーマ</button>
       <button id="bc">地点</button>
     </div>
@@ -129,7 +130,7 @@ $('wx').onclick=()=>$('wx').classList.toggle('open');
 let st='idle';
 const STL={idle:'待機中',listen:'聞き取り中',think:'考え中',speak:'話しています'};
 function setSt(s){
-  st=s;$('src').textContent=micOn&&s==='idle'?'聞いています':STL[s];
+  st=s;stSince=Date.now();$('src').textContent=micOn&&s==='idle'?'聞いています':STL[s];
   $('bk').textContent=micOn?'マイクをOFFにする':'マイクON';
   $('bk').classList.toggle('on',micOn);
 }
@@ -143,7 +144,7 @@ function show(kind,text){
 
 /* 会話 */
 const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
-let hist=store.get('hist',[]),spTok=0,hold=0;
+let hist=store.get('hist',[]),spTok=0,hold=0,stSince=Date.now(),barge=store.get('barge',true);
 function ctx(){
   const d=new Date();
   return '日時 '+d.toLocaleString('ja-JP',{dateStyle:'full',timeStyle:'short'})+(wxs?'、'+wxs:'');
@@ -175,20 +176,39 @@ async function ask(text){
     hist.pop();setSt('idle');show('sys',String(e.message||e));
   }
 }
-function speak(text){
+function muteMic(b){if(ms)ms.getAudioTracks().forEach(t=>t.enabled=!b)}
+function resumeAc(){if(ac&&ac.state!=='running')ac.resume().catch(()=>{})}
+function speakDone(my){
+  if(my!==spTok)return;
+  hold=performance.now()+700;muteMic(false);resumeAc();setSt('idle');
+}
+function syncBg(){$('bg').textContent=barge?'割込ON':'割込OFF'}
+function speak(text,retried){
   const syn=window.speechSynthesis;
   if(!syn){setSt('idle');return}
   syn.cancel();const my=++spTok;
   const parts=text.replace(/[*#`_>]/g,'').split(/(?<=[。！？!?\n])/).map(s=>s.trim()).filter(Boolean);
   if(!parts.length){setSt('idle');return}
+  if(!barge)muteMic(true);
   const vs=syn.getVoices().filter(v=>v.lang&&v.lang.replace('_','-').toLowerCase().startsWith('ja'));
+  const t0=setTimeout(()=>{
+    if(my!==spTok||st!=='think')return;
+    spTok++;try{syn.cancel()}catch(e){}
+    muteMic(false);
+    if(!retried){
+      barge=false;store.set('barge',false);syncBg();
+      show('sys','読み上げが始まらなかったので、AIが話している間はマイクを止める設定にして、もう一度読み上げます');
+      speak(text,true);
+    }else{setSt('idle');show('sys','この端末では読み上げを始められませんでした')}
+  },2500);
+  setTimeout(()=>{if(my===spTok&&st!=='idle')speakDone(my)},5000+text.length*400);
   parts.forEach((p,i)=>{
     const u=new SpeechSynthesisUtterance(p);
     u.lang='ja-JP';u.rate=1.05;
     if(vs[0])u.voice=vs[0];
-    if(i===0)u.onstart=()=>{if(my===spTok)setSt('speak')};
-    if(i===parts.length-1){u.onend=()=>{if(my===spTok){hold=performance.now()+700;setSt('idle')}}}
-    u.onerror=()=>{if(i===parts.length-1&&my===spTok)setSt('idle')};
+    if(i===0)u.onstart=()=>{if(my===spTok){clearTimeout(t0);setSt('speak')}};
+    if(i===parts.length-1)u.onend=()=>speakDone(my);
+    u.onerror=()=>{if(i===parts.length-1)speakDone(my)};
     syn.speak(u);
   });
 }
@@ -211,11 +231,14 @@ addEventListener('resize',rs);rs();
 /* マイクエンジン: 一度の許可で開きっぱなし。声を見つけて録音→文字起こし→会話。AIが話している間に話すと、読み上げを止めて聞き取る */
 let proc=null,pre=[],buf=[],talking=false,vHi=0,vLo=0,sr=48000,nf=.005;
 async function micStart(){
+  /* 許可ダイアログより前（タップした瞬間）に、読み上げの解錠とAudioContextの開始をしておく */
+  try{speechSynthesis.speak(new SpeechSynthesisUtterance(''))}catch(e){}
+  ac=new (window.AudioContext||window.webkitAudioContext)();
+  try{ac.resume()}catch(e){}
   try{
     ms=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true,autoGainControl:true}});
-  }catch(e){show('sys','マイクを使えません。ブラウザのマイク許可を確認してください');return}
-  try{speechSynthesis.speak(new SpeechSynthesisUtterance(''))}catch(e){}
-  ac=new (window.AudioContext||window.webkitAudioContext)();await ac.resume();
+  }catch(e){try{ac.close()}catch(x){}ac=null;show('sys','マイクを使えません。ブラウザのマイク許可を確認してください');return}
+  await ac.resume();
   sr=ac.sampleRate;
   const src=ac.createMediaStreamSource(ms);
   an=ac.createAnalyser();an.fftSize=256;an.smoothingTimeConstant=.75;fd=new Uint8Array(an.frequencyBinCount);
@@ -299,6 +322,15 @@ function toWav(ch){
   return w.buffer;
 }
 $('bk').onclick=()=>micOn?micStop():micStart();
+$('bg').onclick=()=>{barge=!barge;store.set('barge',barge);syncBg()};
+setInterval(()=>{
+  if(!micOn)return;
+  resumeAc();
+  if(ms&&ms.getAudioTracks().some(t=>t.readyState==='ended')){micStop();show('sys','マイクが切れました。もう一度「マイクON」を押してください');return}
+  if(st==='think'&&Date.now()-stSince>45000){setSt('idle');show('sys','返事が来なかったので待機に戻しました')}
+},1000);
+document.addEventListener('visibilitychange',resumeAc);
+syncBg();
 
 $('bt').onclick=()=>{ti=(ti+1)%THN.length;store.set('ti',ti);applyTheme()};
 $('bc').onclick=()=>{
