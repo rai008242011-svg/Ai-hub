@@ -49,7 +49,7 @@ button:active,button.on{background:var(--c);color:#000}
     <div class="r"><div id="src">待機中</div><div id="cname"></div></div>
   </div>
   <div class="bot">
-    <div id="log"><div class="y" id="ly"></div><div class="a" id="la"></div><div class="s" id="ls"></div></div>
+    <div id="log"><div class="y" id="ly"></div><div class="a" id="la"></div><div id="lm" style="opacity:.45;font-size:11px"></div><div class="s" id="ls"></div></div>
     <div class="wx" id="wx">
       <div class="now"><span id="tmp">--°</span><span id="lbl">取得中</span></div>
       <div id="sub"></div>
@@ -131,12 +131,12 @@ let st='idle';
 const STL={idle:'待機中',listen:'聞いています',think:'考え中',speak:'話しています'};
 function setSt(s){
   st=s;$('src').textContent=micOn&&s==='idle'?'環境音 ▸ MIC':STL[s];
-  $('bk').textContent=s==='listen'?'聞き取り中（止める）':s==='speak'?'止める':s==='think'?'考え中…':'話す';
-  $('bk').classList.toggle('on',s!=='idle');
+  $('bk').textContent=auto?'会話を終える':'会話スタート';
+  $('bk').classList.toggle('on',auto);
 }
 function show(kind,text){
   $('log').style.display='block';
-  if(kind==='you'){$('ly').textContent='あなた: '+text;$('la').textContent='';$('ls').textContent=''}
+  if(kind==='you'){$('ly').textContent='あなた: '+text;$('la').textContent='';$('ls').textContent='';$('lm').textContent=''}
   else if(kind==='ai'){$('la').textContent='ORRERY: '+text}
   else{$('ls').textContent=text}
   $('log').scrollTop=$('log').scrollHeight;
@@ -160,48 +160,61 @@ async function post(retry){
   if(res.status===404)throw new Error('サーバー側（api/chat.js）が見つかりません。Vercelに公開して開いてください');
   const j=await res.json().catch(()=>({}));
   if(!res.ok)throw new Error(j.error||('通信エラー '+res.status));
-  return j.reply;
+  return j;
 }
 async function ask(text){
   show('you',text);
   hist.push({role:'user',content:text});
   setSt('think');
   try{
-    const r=await post();
+    const j=await post();const r=j.reply;
     hist.push({role:'assistant',content:r});
     hist=hist.slice(-16);store.set('hist',hist);
-    show('ai',r);speak(r);
+    show('ai',r);if(j.model)$('lm').textContent='モデル: '+j.model;
+    speak(r);
   }catch(e){
-    hist.pop();setSt('idle');show('sys',String(e.message||e));
+    hist.pop();auto=false;setSt('idle');show('sys',String(e.message||e));
   }
 }
 function speak(text){
   const syn=window.speechSynthesis;
-  if(!syn){setSt('idle');return}
+  if(!syn){setSt('idle');auto=false;return}
   syn.cancel();
   const parts=text.replace(/[*#`_>]/g,'').split(/(?<=[。！？!?\n])/).map(s=>s.trim()).filter(Boolean);
-  if(!parts.length){setSt('idle');return}
+  if(!parts.length){setSt('idle');if(auto)setTimeout(begin,350);return}
   const vs=syn.getVoices().filter(v=>v.lang&&v.lang.replace('_','-').toLowerCase().startsWith('ja'));
   parts.forEach((p,i)=>{
     const u=new SpeechSynthesisUtterance(p);
     u.lang='ja-JP';u.rate=1.05;
     if(vs[0])u.voice=vs[0];
     if(i===0)u.onstart=()=>setSt('speak');
-    if(i===parts.length-1){u.onend=()=>setSt('idle');}
-    u.onerror=()=>{if(i===parts.length-1)setSt('idle')};
+    if(i===parts.length-1){u.onend=()=>{setSt('idle');if(auto)setTimeout(begin,350)}}
+    u.onerror=()=>{if(i===parts.length-1){setSt('idle');if(auto)setTimeout(begin,350)}};
     syn.speak(u);
   });
 }
-function listen(){
-  if(st==='listen'){try{rec.stop()}catch(e){}return}
-  if(st==='speak'||st==='think'){if(window.speechSynthesis)speechSynthesis.cancel();setSt('idle');return}
+let auto=false,empty=0;
+function startAuto(){
   /* iOSで後から読み上げできるよう、タップ中に空の発話で解錠 */
   try{speechSynthesis.speak(new SpeechSynthesisUtterance(''))}catch(e){}
   if(!SR){show('sys','この環境は音声認識に未対応です。「文字」ボタンで入力してください（キーボードのマイクで声入力もできます）');return}
+  auto=true;empty=0;begin();
+}
+function stopAuto(){
+  auto=false;
+  try{if(rec)rec.abort()}catch(e){}
+  try{if(window.speechSynthesis)speechSynthesis.cancel()}catch(e){}
+  setSt('idle');
+}
+function begin(){
+  if(!auto||st==='think'||st==='speak')return;
   stopMic();
-  rec=new SR();rec.lang='ja-JP';rec.interimResults=true;rec.continuous=false;
+  try{if(rec)rec.abort()}catch(e){}
+  const me=new SR();rec=me;
+  me.lang='ja-JP';me.interimResults=true;me.continuous=false;
   let fin='';
-  rec.onresult=e=>{
+  me.onresult=e=>{
+    if(me!==rec)return;
     let it='';
     for(let i=e.resultIndex;i<e.results.length;i++){
       const r=e.results[i];
@@ -209,20 +222,23 @@ function listen(){
     }
     show('you',fin+it);
   };
-  rec.onerror=e=>{
-    setSt('idle');
-    const m={'not-allowed':'マイクか音声認識の許可がありません。iPhoneの設定 › Safari › マイク と、設定 › プライバシーとセキュリティ › 音声認識 を確認してください','no-speech':'声が聞こえませんでした。もう一度「話す」を押してください','service-not-allowed':'音声認識が許可されていません。「文字」ボタンで入力してください'};
-    show('sys',m[e.error]||('音声認識エラー: '+e.error));
+  me.onerror=e=>{
+    if(me!==rec)return;
+    const m={'not-allowed':'マイクか音声認識の許可がありません。iPhoneの設定 › Safari › マイク と、設定 › プライバシーとセキュリティ › 音声認識 を確認してください','service-not-allowed':'音声認識が許可されていません。「文字」ボタンで入力してください','audio-capture':'マイクを使えませんでした。ほかのアプリがマイクを使っていないか確認してください'};
+    if(m[e.error]){auto=false;setSt('idle');show('sys',m[e.error])}
   };
-  rec.onend=()=>{
-    if(st!=='listen')return;
+  me.onend=()=>{
+    if(me!==rec||!auto)return;
     const t=fin.trim();
-    if(t)ask(t);else setSt('idle');
+    if(t){empty=0;ask(t);return}
+    empty++;
+    if(empty>=6){stopAuto();show('sys','しばらく声がなかったので会話を終えました。続けるときは「会話スタート」を押してください');return}
+    setTimeout(begin,300);
   };
   setSt('listen');
-  try{rec.start()}catch(e){setSt('idle');show('sys','音声認識を開始できませんでした')}
+  try{me.start()}catch(e){setTimeout(begin,800)}
 }
-$('bk').onclick=listen;
+$('bk').onclick=()=>{auto?stopAuto():startAuto()};
 $('bx').onclick=()=>{const t=$('tx');const o=t.style.display==='flex';t.style.display=o?'none':'flex';if(!o)$('ti').focus()};
 function sendText(){
   const v=$('ti').value.trim();if(!v||st==='think')return;
