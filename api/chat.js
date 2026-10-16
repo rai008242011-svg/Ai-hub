@@ -1,6 +1,6 @@
 // Vercel サーバー関数: /api/chat （Groq版・ウェブ検索つき）
 // 環境変数: GROQ_API_KEY (必須) / APP_PASSCODE (任意の合言葉) / GROQ_MODEL (任意)
-// 初期モデル groq/compound-mini はウェブ検索を自動で使います。失敗したら gpt-oss-20b に切り替えます。
+// gpt-oss モデルの内蔵ウェブ検索(browser_search)を使います。失敗したら検索なしに切り替えます。
 
 const SYSTEM = [
   'あなたはORRERYという音声対話アシスタントです。ユーザーとは声で会話しています。',
@@ -27,7 +27,7 @@ function clean(t) {
     .trim();
 }
 
-async function callGroq(key, model, system, msgs) {
+async function callGroq(key, model, system, msgs, tools) {
   const body = {
     model,
     max_completion_tokens: 1500,
@@ -37,6 +37,7 @@ async function callGroq(key, model, system, msgs) {
     body.reasoning_effort = 'low';
     body.temperature = 0.7;
   }
+  if (tools) body.tools = [{ type: 'browser_search' }];
   const r = await fetch('https://api.groq.com/openai/v1/chat/completions', {
     method: 'POST',
     headers: { 'content-type': 'application/json', 'authorization': 'Bearer ' + key },
@@ -86,22 +87,19 @@ export default async function handler(req, res) {
   }
 
   const system = SYSTEM + (body.context ? '\n\n現在の状況: ' + String(body.context).slice(0, 400) : '');
-  const primary = process.env.GROQ_MODEL || 'groq/compound-mini';
-
-  try {
-    const reply = await callGroq(key, primary, system, msgs);
-    res.status(200).json({ reply, model: primary });
-    return;
-  } catch (e1) {
-    if (primary === FALLBACK) {
-      res.status(502).json({ error: String(e1.message || e1) });
-      return;
-    }
+  const primary = process.env.GROQ_MODEL || FALLBACK;
+  const tries = [[primary, true], [FALLBACK, true], [FALLBACK, false]]
+    .filter((t, i, a) => a.findIndex(u => u[0] === t[0] && u[1] === t[1]) === i);
+  let firstErr = '';
+  for (const [model, tools] of tries) {
+    const useTools = tools && model.startsWith('openai/gpt-oss');
     try {
-      const reply = await callGroq(key, FALLBACK, system, msgs);
-      res.status(200).json({ reply, model: FALLBACK + '（検索なし）' });
-    } catch (e2) {
-      res.status(502).json({ error: String(e1.message || e1) });
+      const reply = await callGroq(key, model, system, msgs, useTools);
+      res.status(200).json({ reply, model: model + (useTools ? '（検索あり）' : '（検索なし）') });
+      return;
+    } catch (e) {
+      if (!firstErr) firstErr = String(e.message || e);
     }
   }
+  res.status(502).json({ error: firstErr });
 }
