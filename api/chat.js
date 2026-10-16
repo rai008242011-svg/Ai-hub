@@ -53,9 +53,10 @@ export default async function handler(req, res) {
         'authorization': 'Bearer ' + key
       },
       body: JSON.stringify({
-        model: process.env.GROQ_MODEL || 'llama-3.3-70b-versatile',
-        max_tokens: 400,
-        temperature: 0.7,
+           model: process.env.GROQ_MODEL || 'openai/gpt-oss-20b',
+   max_completion_tokens: 1500,
+   reasoning_effort: 'low',
+   temperature: 0.7,
         messages: [{ role: 'system', content: system }, ...msgs]
       })
     });
