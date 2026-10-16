@@ -1,9 +1,9 @@
-// Vercel サーバー関数: /api/chat
-// 環境変数: ANTHROPIC_API_KEY (必須) / APP_PASSCODE (任意の合言葉) / ANTHROPIC_MODEL (任意)
+// Vercel サーバー関数: /api/chat （Groq版）
+// 環境変数: GROQ_API_KEY (必須) / APP_PASSCODE (任意の合言葉) / GROQ_MODEL (任意)
 
 const SYSTEM = [
   'あなたはORRERYという音声対話アシスタントです。ユーザーとは声で会話しています。',
-  '返答は日本語で、話し言葉で、1〜3文の短さにしてください。',
+  '必ず自然な日本語の話し言葉で、1〜3文の短さで返答してください。',
   'あなたの返答は音声で読み上げられます。Markdown、箇条書き、記号、絵文字、URLは使わないでください。',
   '長い説明を求められたら要点だけ話し、続きを聞きたいか尋ねてください。',
   'わからないことは、わからないと正直に答えてください。'
@@ -21,9 +21,9 @@ export default async function handler(req, res) {
     return;
   }
 
-  const key = process.env.ANTHROPIC_API_KEY;
+  const key = process.env.GROQ_API_KEY;
   if (!key) {
-    res.status(500).json({ error: 'ANTHROPIC_API_KEY が未設定です（Vercelの環境変数に追加して再デプロイ）' });
+    res.status(500).json({ error: 'GROQ_API_KEY が未設定です（Vercelの環境変数に追加して再デプロイ）' });
     return;
   }
 
@@ -46,26 +46,29 @@ export default async function handler(req, res) {
   const system = SYSTEM + (body.context ? '\n\n現在の状況: ' + String(body.context).slice(0, 400) : '');
 
   try {
-    const r = await fetch('https://api.anthropic.com/v1/messages', {
+    const r = await fetch('https://api.groq.com/openai/v1/chat/completions', {
       method: 'POST',
       headers: {
         'content-type': 'application/json',
-        'x-api-key': key,
-        'anthropic-version': '2023-06-01'
+        'authorization': 'Bearer ' + key
       },
       body: JSON.stringify({
-        model: process.env.ANTHROPIC_MODEL || 'claude-sonnet-5-5',
+        model: process.env.GROQ_MODEL || 'llama-3.3-70b-versatile',
         max_tokens: 400,
-        system,
-        messages: msgs
+        temperature: 0.7,
+        messages: [{ role: 'system', content: system }, ...msgs]
       })
     });
-    const j = await r.json();
+    const j = await r.json().catch(() => ({}));
     if (!r.ok) {
-      res.status(502).json({ error: (j.error && j.error.message) || ('API エラー ' + r.status) });
+      res.status(502).json({ error: (j.error && j.error.message) || ('Groq エラー ' + r.status) });
       return;
     }
-    const reply = (j.content || []).filter(b => b.type === 'text').map(b => b.text).join('');
+    const reply = (j.choices && j.choices[0] && j.choices[0].message && j.choices[0].message.content) || '';
+    if (!reply) {
+      res.status(502).json({ error: '返事が空でした。もう一度話しかけてください' });
+      return;
+    }
     res.status(200).json({ reply });
   } catch (e) {
     res.status(500).json({ error: String(e) });
