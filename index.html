@@ -1,0 +1,340 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="ORRERY">
+<meta name="theme-color" content="#02060a">
+<title>ORRERY</title>
+<style>
+:root{--c:#33ddff;--c2:#a0f0ff}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{margin:0;height:100%;background:#02060a;color:var(--c);font-family:ui-monospace,Menlo,"Hiragino Sans",monospace;overflow:hidden;touch-action:manipulation;-webkit-user-select:none;user-select:none}
+canvas{position:fixed;inset:0;width:100%;height:100%}
+.ui{position:fixed;inset:0;display:flex;flex-direction:column;justify-content:space-between;padding:calc(env(safe-area-inset-top,0px) + 12px) 16px calc(env(safe-area-inset-bottom,0px) + 14px);pointer-events:none}
+#clock{font-size:32px;font-weight:700;letter-spacing:.06em;color:var(--c2);text-shadow:0 0 14px var(--c)}
+#date,#src,#cname{font-size:12px;opacity:.75;letter-spacing:.06em}
+.top{display:flex;justify-content:space-between;align-items:flex-start}
+.top .r{text-align:right}
+.bot{display:flex;flex-direction:column;gap:8px}
+#log{max-height:22vh;overflow:auto;border:1px solid var(--c);border-radius:12px;background:rgba(0,0,0,.6);padding:8px 12px;font-size:13px;line-height:1.5;pointer-events:auto;display:none;-webkit-user-select:text;user-select:text}
+#log .y{opacity:.65}
+#log .a{color:var(--c2)}
+#log .s{color:#ff8a8a}
+.wx{border:1px solid var(--c);border-radius:12px;background:rgba(0,0,0,.45);padding:8px 12px;pointer-events:auto}
+.now{display:flex;justify-content:space-between;align-items:baseline}
+#tmp{font-size:22px;font-weight:700;color:var(--c2)}
+#lbl,#sub{font-size:12px}
+#sub{opacity:.7}
+.fc{display:none;grid-template-columns:repeat(4,1fr);gap:6px;font-size:11px;text-align:center;border-top:1px solid var(--c);padding-top:8px;margin-top:6px}
+.wx.open .fc{display:grid}
+.fc b{display:block;font-weight:400;opacity:.7}
+#tx{display:none;gap:8px;pointer-events:auto}
+#tx input{flex:1;font:inherit;font-size:16px;color:var(--c2);background:rgba(0,0,0,.65);border:1px solid var(--c);border-radius:10px;padding:10px 12px;outline:none;-webkit-user-select:text;user-select:text}
+.btns{display:flex;gap:6px}
+button{flex:1;pointer-events:auto;font:inherit;font-size:12px;color:var(--c);background:rgba(0,0,0,.5);border:1px solid var(--c);border-radius:10px;padding:13px 0}
+button.talk{flex:1.7;font-size:14px;font-weight:700}
+button:active,button.on{background:var(--c);color:#000}
+#tx button{flex:none;padding:0 16px}
+</style>
+</head>
+<body>
+<canvas id="cv"></canvas>
+<div class="ui">
+  <div class="top">
+    <div><div id="clock">--:--:--</div><div id="date"></div></div>
+    <div class="r"><div id="src">待機中</div><div id="cname"></div></div>
+  </div>
+  <div class="bot">
+    <div id="log"><div class="y" id="ly"></div><div class="a" id="la"></div><div class="s" id="ls"></div></div>
+    <div class="wx" id="wx">
+      <div class="now"><span id="tmp">--°</span><span id="lbl">取得中</span></div>
+      <div id="sub"></div>
+      <div class="fc" id="fc"></div>
+    </div>
+    <div id="tx"><input id="ti" type="text" placeholder="ここに入力して送信" enterkeyhint="send" autocomplete="off"><button id="ts">送信</button></div>
+    <div class="btns">
+      <button class="talk" id="bk">話す</button>
+      <button id="bx">文字</button>
+      <button id="bm">環境音</button>
+      <button id="bt">テーマ</button>
+      <button id="bc">地点</button>
+    </div>
+  </div>
+</div>
+<script>
+const TH={ARC:['#33ddff','#a0f0ff'],EMBER:['#ff8a2a','#ffd49a'],MATRIX:['#2dff6a','#b8ffcc'],CRIMSON:['#ff2d55','#ffa0b2'],MONO:['#e6e6e6','#ffffff']};
+const THN=Object.keys(TH);
+const CITY=[['TOKYO',35.68,139.69],['OSAKA',34.69,135.5],['NAGOYA',35.18,136.91],['SAPPORO',43.06,141.35],['FUKUOKA',33.59,130.4]];
+const $=id=>document.getElementById(id);
+const store={
+  get(k,d){try{const v=localStorage.getItem(k);return v===null?d:JSON.parse(v)}catch(e){return d}},
+  set(k,v){try{localStorage.setItem(k,JSON.stringify(v))}catch(e){}}
+};
+let ti=store.get('ti',0)%THN.length, ci=store.get('ci',0), geo=store.get('geo',null);
+if(ci>CITY.length||(ci===CITY.length&&!geo))ci=0;
+
+function applyTheme(){
+  const [a,b]=TH[THN[ti]];
+  document.documentElement.style.setProperty('--c',a);
+  document.documentElement.style.setProperty('--c2',b);
+  $('bt').textContent=THN[ti];
+}
+function place(){return ci<CITY.length?CITY[ci]:['現在地',geo[0],geo[1]]}
+
+/* 時計 */
+function tick(){
+  const d=new Date(),p=n=>String(n).padStart(2,'0');
+  $('clock').textContent=p(d.getHours())+':'+p(d.getMinutes())+':'+p(d.getSeconds());
+  $('date').textContent=d.toLocaleDateString('ja-JP',{year:'numeric',month:'long',day:'numeric',weekday:'short'});
+}
+setInterval(tick,1000);tick();
+
+/* 天気 (Open-Meteo) */
+let wxs='';
+function wx(c){
+  if(c===0)return'快晴';if(c<=2)return'晴れ';if(c===3)return'くもり';if(c<=48)return'霧';
+  if(c<=57)return'霧雨';if(c<=67)return'雨';if(c<=77)return'雪';if(c<=82)return'にわか雨';
+  if(c<=86)return'にわか雪';return'雷雨';
+}
+async function weather(){
+  const [n,la,lo]=place();
+  $('cname').textContent=n;
+  try{
+    const u='https://api.open-meteo.com/v1/forecast?latitude='+la+'&longitude='+lo+
+      '&current=temperature_2m,weather_code,wind_speed_10m,relative_humidity_2m'+
+      '&daily=weather_code,temperature_2m_max,temperature_2m_min&timezone=auto&forecast_days=5';
+    const r=await fetch(u);if(!r.ok)throw new Error(r.status);
+    const j=await r.json(),c=j.current;
+    $('tmp').textContent=Math.round(c.temperature_2m)+'°C';
+    $('lbl').textContent=wx(c.weather_code);
+    $('sub').textContent='湿度 '+c.relative_humidity_2m+'%  風 '+c.wind_speed_10m+'km/h  （タップで予報）';
+    wxs='天気 '+n+' '+Math.round(c.temperature_2m)+'度 '+wx(c.weather_code);
+    let h='';
+    for(let i=1;i<5;i++){
+      const w=new Date(j.daily.time[i]+'T00:00').toLocaleDateString('ja-JP',{weekday:'short'});
+      h+='<div><b>'+w+'</b>'+wx(j.daily.weather_code[i])+'<br>'+Math.round(j.daily.temperature_2m_max[i])+'/'+Math.round(j.daily.temperature_2m_min[i])+'°</div>';
+    }
+    $('fc').innerHTML=h;
+  }catch(e){
+    $('tmp').textContent='--°';$('lbl').textContent='取得失敗';
+    $('sub').textContent='通信を確認して、地点ボタンで再取得してください';wxs='';
+  }
+}
+$('wx').onclick=()=>$('wx').classList.toggle('open');
+
+/* 状態 */
+let st='idle';
+const STL={idle:'待機中',listen:'聞いています',think:'考え中',speak:'話しています'};
+function setSt(s){
+  st=s;$('src').textContent=micOn&&s==='idle'?'環境音 ▸ MIC':STL[s];
+  $('bk').textContent=s==='listen'?'聞き取り中（止める）':s==='speak'?'止める':s==='think'?'考え中…':'話す';
+  $('bk').classList.toggle('on',s!=='idle');
+}
+function show(kind,text){
+  $('log').style.display='block';
+  if(kind==='you'){$('ly').textContent='あなた: '+text;$('la').textContent='';$('ls').textContent=''}
+  else if(kind==='ai'){$('la').textContent='ORRERY: '+text}
+  else{$('ls').textContent=text}
+  $('log').scrollTop=$('log').scrollHeight;
+}
+
+/* 会話 */
+const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
+let hist=store.get('hist',[]),rec=null;
+function ctx(){
+  const d=new Date();
+  return '日時 '+d.toLocaleString('ja-JP',{dateStyle:'full',timeStyle:'short'})+(wxs?'、'+wxs:'');
+}
+async function post(retry){
+  const h={'content-type':'application/json'};
+  const pw=store.get('pw','');if(pw)h['x-pass']=pw;
+  const res=await fetch('/api/chat',{method:'POST',headers:h,body:JSON.stringify({messages:hist,context:ctx()})});
+  if(res.status===401&&!retry){
+    const p=prompt('合言葉を入力してください');
+    if(p){store.set('pw',p);return post(true)}
+  }
+  if(res.status===404)throw new Error('サーバー側（api/chat.js）が見つかりません。Vercelに公開して開いてください');
+  const j=await res.json().catch(()=>({}));
+  if(!res.ok)throw new Error(j.error||('通信エラー '+res.status));
+  return j.reply;
+}
+async function ask(text){
+  show('you',text);
+  hist.push({role:'user',content:text});
+  setSt('think');
+  try{
+    const r=await post();
+    hist.push({role:'assistant',content:r});
+    hist=hist.slice(-16);store.set('hist',hist);
+    show('ai',r);speak(r);
+  }catch(e){
+    hist.pop();setSt('idle');show('sys',String(e.message||e));
+  }
+}
+function speak(text){
+  const syn=window.speechSynthesis;
+  if(!syn){setSt('idle');return}
+  syn.cancel();
+  const parts=text.replace(/[*#`_>]/g,'').split(/(?<=[。！？!?\n])/).map(s=>s.trim()).filter(Boolean);
+  if(!parts.length){setSt('idle');return}
+  const vs=syn.getVoices().filter(v=>v.lang&&v.lang.replace('_','-').toLowerCase().startsWith('ja'));
+  parts.forEach((p,i)=>{
+    const u=new SpeechSynthesisUtterance(p);
+    u.lang='ja-JP';u.rate=1.05;
+    if(vs[0])u.voice=vs[0];
+    if(i===0)u.onstart=()=>setSt('speak');
+    if(i===parts.length-1){u.onend=()=>setSt('idle');}
+    u.onerror=()=>{if(i===parts.length-1)setSt('idle')};
+    syn.speak(u);
+  });
+}
+function listen(){
+  if(st==='listen'){try{rec.stop()}catch(e){}return}
+  if(st==='speak'||st==='think'){if(window.speechSynthesis)speechSynthesis.cancel();setSt('idle');return}
+  /* iOSで後から読み上げできるよう、タップ中に空の発話で解錠 */
+  try{speechSynthesis.speak(new SpeechSynthesisUtterance(''))}catch(e){}
+  if(!SR){show('sys','この環境は音声認識に未対応です。「文字」ボタンで入力してください（キーボードのマイクで声入力もできます）');return}
+  stopMic();
+  rec=new SR();rec.lang='ja-JP';rec.interimResults=true;rec.continuous=false;
+  let fin='';
+  rec.onresult=e=>{
+    let it='';
+    for(let i=e.resultIndex;i<e.results.length;i++){
+      const r=e.results[i];
+      if(r.isFinal)fin+=r[0].transcript;else it+=r[0].transcript;
+    }
+    show('you',fin+it);
+  };
+  rec.onerror=e=>{
+    setSt('idle');
+    const m={'not-allowed':'マイクか音声認識の許可がありません。iPhoneの設定 › Safari › マイク と、設定 › プライバシーとセキュリティ › 音声認識 を確認してください','no-speech':'声が聞こえませんでした。もう一度「話す」を押してください','service-not-allowed':'音声認識が許可されていません。「文字」ボタンで入力してください'};
+    show('sys',m[e.error]||('音声認識エラー: '+e.error));
+  };
+  rec.onend=()=>{
+    if(st!=='listen')return;
+    const t=fin.trim();
+    if(t)ask(t);else setSt('idle');
+  };
+  setSt('listen');
+  try{rec.start()}catch(e){setSt('idle');show('sys','音声認識を開始できませんでした')}
+}
+$('bk').onclick=listen;
+$('bx').onclick=()=>{const t=$('tx');const o=t.style.display==='flex';t.style.display=o?'none':'flex';if(!o)$('ti').focus()};
+function sendText(){
+  const v=$('ti').value.trim();if(!v||st==='think')return;
+  $('ti').value='';
+  try{speechSynthesis.speak(new SpeechSynthesisUtterance(''))}catch(e){}
+  ask(v);
+}
+$('ts').onclick=sendText;
+$('ti').addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.isComposing)sendText()});
+
+/* 環境音（マイクの音に反応） */
+const cv=$('cv'),g=cv.getContext('2d');
+let W,H,D,an=null,fd=null,lv=0,micOn=false,ms=null,ac=null,wl=null;
+function rs(){D=Math.min(devicePixelRatio||1,2);W=innerWidth;H=innerHeight;cv.width=W*D;cv.height=H*D;g.setTransform(D,0,0,D,0,0)}
+addEventListener('resize',rs);rs();
+function stopMic(){
+  if(ms)ms.getTracks().forEach(t=>t.stop());
+  if(ac)ac.close();
+  if(wl){try{wl.release()}catch(e){}}
+  ms=ac=an=fd=wl=null;micOn=false;
+  $('bm').classList.remove('on');
+  if(st==='idle')setSt('idle');
+}
+async function mic(){
+  if(micOn){stopMic();return}
+  if(st!=='idle')return;
+  try{
+    ms=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:false,noiseSuppression:false,autoGainControl:false}});
+    ac=new (window.AudioContext||window.webkitAudioContext)();
+    await ac.resume();
+    const s=ac.createMediaStreamSource(ms);
+    an=ac.createAnalyser();an.fftSize=256;an.smoothingTimeConstant=.75;
+    s.connect(an);fd=new Uint8Array(an.frequencyBinCount);
+    micOn=true;$('bm').classList.add('on');setSt('idle');
+    try{wl=await navigator.wakeLock.request('screen')}catch(e){}
+  }catch(e){show('sys','マイクを使えません。ブラウザの許可を確認してください')}
+}
+$('bm').onclick=mic;
+
+$('bt').onclick=()=>{ti=(ti+1)%THN.length;store.set('ti',ti);applyTheme()};
+$('bc').onclick=()=>{
+  const next=(ci+1)%(CITY.length+1);
+  if(next===CITY.length){
+    if(!navigator.geolocation){ci=0;store.set('ci',ci);weather();return}
+    navigator.geolocation.getCurrentPosition(
+      p=>{geo=[p.coords.latitude,p.coords.longitude];store.set('geo',geo);ci=next;store.set('ci',ci);weather()},
+      ()=>{ci=0;store.set('ci',ci);weather()},
+      {timeout:8000}
+    );
+  }else{ci=next;store.set('ci',ci);weather()}
+};
+
+/* 描画 */
+function ring(cx,cy,t,r,w,dash,sp,al,col){
+  g.save();g.translate(cx,cy);g.rotate(t*sp);g.beginPath();g.arc(0,0,r,0,7);
+  g.setLineDash(dash);g.lineWidth=w;g.globalAlpha=al;g.strokeStyle=col;g.stroke();g.restore();
+}
+function fr(ms_){
+  const t=ms_/1000,[c1,c2]=TH[THN[ti]];
+  g.clearRect(0,0,W,H);
+  let tl=0;
+  if(an){an.getByteFrequencyData(fd);let s=0;for(let i=0;i<48;i++)s+=fd[i];tl=Math.min(1,s/48/255*2.2)}
+  else if(st==='listen')tl=.25+.2*Math.abs(Math.sin(t*5)*Math.sin(t*2.3));
+  else if(st==='speak')tl=.3+.45*Math.abs(Math.sin(t*9)*Math.sin(t*3.1));
+  else if(st==='think')tl=.12+.1*Math.sin(t*6);
+  lv+=(tl-lv)*.25;
+  const spin=st==='think'?3:1;
+  const cx=W/2,cy=H*.37,R=Math.min(W*.4,H*.21),e=Math.min(1,lv+.06+.03*Math.sin(t*1.5));
+
+  const gr=g.createRadialGradient(cx,cy,0,cx,cy,R*.7);
+  gr.addColorStop(0,c2);gr.addColorStop(.3,c1);gr.addColorStop(1,'rgba(0,0,0,0)');
+  g.globalAlpha=.12+e*.55;g.fillStyle=gr;g.beginPath();g.arc(cx,cy,R*.7,0,7);g.fill();
+
+  ring(cx,cy,t,R*1.08,1.5,[2,7],.08*spin,.6,c1);
+  ring(cx,cy,t,R*.9,3,[R*.45,R*.14],-.25*spin,.5+e*.5,c1);
+  ring(cx,cy,t,R*.5,1.5,[4,5],.5*spin,.55,c2);
+  ring(cx,cy,t,R*.38,6,[R*.3,R*.1,R*.05,R*.1],.9*spin,.6+e*.4,c1);
+
+  const N=64;g.setLineDash([]);g.strokeStyle=c2;g.lineWidth=2.2;g.lineCap='round';
+  for(let i=0;i<N;i++){
+    const a=i/N*Math.PI*2-Math.PI/2,k=i<N/2?i:N-1-i;
+    const v=fd?fd[k*2]/255:(.05+lv*(.4+.6*Math.abs(Math.sin(t*8+k*.7))));
+    const r0=R*.62,r1=r0+R*.22*(v+.06);
+    g.globalAlpha=.35+v*.65;g.beginPath();
+    g.moveTo(cx+Math.cos(a)*r0,cy+Math.sin(a)*r0);
+    g.lineTo(cx+Math.cos(a)*r1,cy+Math.sin(a)*r1);g.stroke();
+  }
+
+  const T=36,lit=Math.round((lv*1.6+.12)*T);
+  g.strokeStyle=c1;g.lineWidth=3;
+  for(let i=0;i<T;i++){
+    const a=i/T*Math.PI*2-Math.PI/2,r0=R*1.14,r1=R*1.2;
+    g.globalAlpha=i<lit?.95:.18;g.beginPath();
+    g.moveTo(cx+Math.cos(a)*r0,cy+Math.sin(a)*r0);
+    g.lineTo(cx+Math.cos(a)*r1,cy+Math.sin(a)*r1);g.stroke();
+  }
+
+  g.fillStyle=c2;
+  for(let i=0;i<90;i++){
+    const a=i*2.399+t*(.05+(i%7)*.012),r=R*(.3+((i*37)%100)/100*1.0);
+    g.globalAlpha=.2+lv*.7;g.beginPath();
+    g.arc(cx+Math.cos(a)*r,cy+Math.sin(a)*r,1+lv*2.2,0,7);g.fill();
+  }
+
+  g.globalAlpha=.9;g.fillStyle=c2;g.font='700 15px ui-monospace,Menlo,monospace';
+  g.textAlign='center';g.textBaseline='middle';g.fillText('O R R E R Y',cx,cy);
+  g.globalAlpha=1;
+  requestAnimationFrame(fr);
+}
+if(window.speechSynthesis)speechSynthesis.getVoices();
+if(hist.length&&hist[hist.length-1].role==='user')hist.pop();
+applyTheme();setSt('idle');weather();setInterval(weather,600000);requestAnimationFrame(fr);
+</script>
+</body>
+</html>
