@@ -59,7 +59,6 @@ button:active,button.on{background:var(--c);color:#000}
     <div class="btns">
       <button class="talk" id="bk">話す</button>
       <button id="bx">文字</button>
-      <button id="bm">環境音</button>
       <button id="bt">テーマ</button>
       <button id="bc">地点</button>
     </div>
@@ -128,11 +127,11 @@ $('wx').onclick=()=>$('wx').classList.toggle('open');
 
 /* 状態 */
 let st='idle';
-const STL={idle:'待機中',listen:'聞いています',think:'考え中',speak:'話しています'};
+const STL={idle:'待機中',listen:'聞き取り中',think:'考え中',speak:'話しています'};
 function setSt(s){
-  st=s;$('src').textContent=micOn&&s==='idle'?'環境音 ▸ MIC':STL[s];
-  $('bk').textContent=auto?'会話を終える':'会話スタート';
-  $('bk').classList.toggle('on',auto);
+  st=s;$('src').textContent=micOn&&s==='idle'?'聞いています':STL[s];
+  $('bk').textContent=micOn?'マイクをOFFにする':'マイクON';
+  $('bk').classList.toggle('on',micOn);
 }
 function show(kind,text){
   $('log').style.display='block';
@@ -144,7 +143,7 @@ function show(kind,text){
 
 /* 会話 */
 const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
-let hist=store.get('hist',[]),rec=null;
+let hist=store.get('hist',[]),spTok=0,hold=0;
 function ctx(){
   const d=new Date();
   return '日時 '+d.toLocaleString('ja-JP',{dateStyle:'full',timeStyle:'short'})+(wxs?'、'+wxs:'');
@@ -173,72 +172,27 @@ async function ask(text){
     show('ai',r);if(j.model)$('lm').textContent='モデル: '+j.model;
     speak(r);
   }catch(e){
-    hist.pop();auto=false;setSt('idle');show('sys',String(e.message||e));
+    hist.pop();setSt('idle');show('sys',String(e.message||e));
   }
 }
 function speak(text){
   const syn=window.speechSynthesis;
-  if(!syn){setSt('idle');auto=false;return}
-  syn.cancel();
+  if(!syn){setSt('idle');return}
+  syn.cancel();const my=++spTok;
   const parts=text.replace(/[*#`_>]/g,'').split(/(?<=[。！？!?\n])/).map(s=>s.trim()).filter(Boolean);
-  if(!parts.length){setSt('idle');if(auto)setTimeout(begin,350);return}
+  if(!parts.length){setSt('idle');return}
   const vs=syn.getVoices().filter(v=>v.lang&&v.lang.replace('_','-').toLowerCase().startsWith('ja'));
   parts.forEach((p,i)=>{
     const u=new SpeechSynthesisUtterance(p);
     u.lang='ja-JP';u.rate=1.05;
     if(vs[0])u.voice=vs[0];
-    if(i===0)u.onstart=()=>setSt('speak');
-    if(i===parts.length-1){u.onend=()=>{setSt('idle');if(auto)setTimeout(begin,350)}}
-    u.onerror=()=>{if(i===parts.length-1){setSt('idle');if(auto)setTimeout(begin,350)}};
+    if(i===0)u.onstart=()=>{if(my===spTok)setSt('speak')};
+    if(i===parts.length-1){u.onend=()=>{if(my===spTok){hold=performance.now()+700;setSt('idle')}}}
+    u.onerror=()=>{if(i===parts.length-1&&my===spTok)setSt('idle')};
     syn.speak(u);
   });
 }
-let auto=false,empty=0;
-function startAuto(){
-  /* iOSで後から読み上げできるよう、タップ中に空の発話で解錠 */
-  try{speechSynthesis.speak(new SpeechSynthesisUtterance(''))}catch(e){}
-  if(!SR){show('sys','この環境は音声認識に未対応です。「文字」ボタンで入力してください（キーボードのマイクで声入力もできます）');return}
-  auto=true;empty=0;begin();
-}
-function stopAuto(){
-  auto=false;
-  try{if(rec)rec.abort()}catch(e){}
-  try{if(window.speechSynthesis)speechSynthesis.cancel()}catch(e){}
-  setSt('idle');
-}
-function begin(){
-  if(!auto||st==='think'||st==='speak')return;
-  stopMic();
-  try{if(rec)rec.abort()}catch(e){}
-  const me=new SR();rec=me;
-  me.lang='ja-JP';me.interimResults=true;me.continuous=false;
-  let fin='';
-  me.onresult=e=>{
-    if(me!==rec)return;
-    let it='';
-    for(let i=e.resultIndex;i<e.results.length;i++){
-      const r=e.results[i];
-      if(r.isFinal)fin+=r[0].transcript;else it+=r[0].transcript;
-    }
-    show('you',fin+it);
-  };
-  me.onerror=e=>{
-    if(me!==rec)return;
-    const m={'not-allowed':'マイクか音声認識の許可がありません。iPhoneの設定 › Safari › マイク と、設定 › プライバシーとセキュリティ › 音声認識 を確認してください','service-not-allowed':'音声認識が許可されていません。「文字」ボタンで入力してください','audio-capture':'マイクを使えませんでした。ほかのアプリがマイクを使っていないか確認してください'};
-    if(m[e.error]){auto=false;setSt('idle');show('sys',m[e.error])}
-  };
-  me.onend=()=>{
-    if(me!==rec||!auto)return;
-    const t=fin.trim();
-    if(t){empty=0;ask(t);return}
-    empty++;
-    if(empty>=6){stopAuto();show('sys','しばらく声がなかったので会話を終えました。続けるときは「会話スタート」を押してください');return}
-    setTimeout(begin,300);
-  };
-  setSt('listen');
-  try{me.start()}catch(e){setTimeout(begin,800)}
-}
-$('bk').onclick=()=>{auto?stopAuto():startAuto()};
+
 $('bx').onclick=()=>{const t=$('tx');const o=t.style.display==='flex';t.style.display=o?'none':'flex';if(!o)$('ti').focus()};
 function sendText(){
   const v=$('ti').value.trim();if(!v||st==='think')return;
@@ -254,29 +208,97 @@ const cv=$('cv'),g=cv.getContext('2d');
 let W,H,D,an=null,fd=null,lv=0,micOn=false,ms=null,ac=null,wl=null;
 function rs(){D=Math.min(devicePixelRatio||1,2);W=innerWidth;H=innerHeight;cv.width=W*D;cv.height=H*D;g.setTransform(D,0,0,D,0,0)}
 addEventListener('resize',rs);rs();
-function stopMic(){
+/* マイクエンジン: 一度の許可で開きっぱなし。声を見つけて録音→文字起こし→会話。AIが話している間に話すと、読み上げを止めて聞き取る */
+let proc=null,pre=[],buf=[],talking=false,vHi=0,vLo=0,sr=48000,nf=.005;
+async function micStart(){
+  try{
+    ms=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true,autoGainControl:true}});
+  }catch(e){show('sys','マイクを使えません。ブラウザのマイク許可を確認してください');return}
+  try{speechSynthesis.speak(new SpeechSynthesisUtterance(''))}catch(e){}
+  ac=new (window.AudioContext||window.webkitAudioContext)();await ac.resume();
+  sr=ac.sampleRate;
+  const src=ac.createMediaStreamSource(ms);
+  an=ac.createAnalyser();an.fftSize=256;an.smoothingTimeConstant=.75;fd=new Uint8Array(an.frequencyBinCount);
+  proc=ac.createScriptProcessor(4096,1,1);proc.onaudioprocess=onAudio;
+  const mute=ac.createGain();mute.gain.value=0;
+  src.connect(an);src.connect(proc);proc.connect(mute);mute.connect(ac.destination);
+  micOn=true;talking=false;pre=[];buf=[];setSt('idle');
+  try{wl=await navigator.wakeLock.request('screen')}catch(e){}
+}
+function micStop(){
+  talking=false;buf=[];pre=[];spTok++;
+  try{speechSynthesis.cancel()}catch(e){}
+  if(proc){proc.onaudioprocess=null;try{proc.disconnect()}catch(e){}}
   if(ms)ms.getTracks().forEach(t=>t.stop());
   if(ac)ac.close();
   if(wl){try{wl.release()}catch(e){}}
-  ms=ac=an=fd=wl=null;micOn=false;
-  $('bm').classList.remove('on');
-  if(st==='idle')setSt('idle');
+  proc=ms=ac=an=fd=wl=null;micOn=false;setSt('idle');
 }
-async function mic(){
-  if(micOn){stopMic();return}
-  if(st!=='idle')return;
+function onAudio(e){
+  if(st==='think'||performance.now()<hold)return;
+  const x=new Float32Array(e.inputBuffer.getChannelData(0));
+  let s=0;for(let i=0;i<x.length;i++)s+=x[i]*x[i];
+  const rms=Math.sqrt(s/x.length),dur=x.length/sr;
+  const base=Math.max(.015,nf*3);
+  if(st==='idle'&&!talking&&rms<base)nf=nf*.97+rms*.03;
+  const speakingNow=st==='speak';
+  const hi=speakingNow?Math.max(.05,base*2.5):base;
+  if(!talking){
+    pre.push(x);if(pre.length>4)pre.shift();
+    vHi=rms>hi?vHi+dur:Math.max(0,vHi-dur);
+    if(vHi>=(speakingNow?.35:.12)){
+      talking=true;buf=pre.slice();pre=[];vHi=0;vLo=0;
+      if(speakingNow){spTok++;try{speechSynthesis.cancel()}catch(e){}}
+      setSt('listen');
+    }
+  }else{
+    buf.push(x);
+    vLo=rms>base*.7?0:vLo+dur;
+    if(vLo>=1||buf.length*dur>25)finishUtter();
+  }
+}
+async function finishUtter(){
+  talking=false;vLo=0;
+  const ch=buf;buf=[];
+  let n=0;ch.forEach(c=>n+=c.length);
+  if(n/sr<.6){setSt('idle');return}
+  setSt('think');
   try{
-    ms=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:false,noiseSuppression:false,autoGainControl:false}});
-    ac=new (window.AudioContext||window.webkitAudioContext)();
-    await ac.resume();
-    const s=ac.createMediaStreamSource(ms);
-    an=ac.createAnalyser();an.fftSize=256;an.smoothingTimeConstant=.75;
-    s.connect(an);fd=new Uint8Array(an.frequencyBinCount);
-    micOn=true;$('bm').classList.add('on');setSt('idle');
-    try{wl=await navigator.wakeLock.request('screen')}catch(e){}
-  }catch(e){show('sys','マイクを使えません。ブラウザの許可を確認してください')}
+    const t=await stt(toWav(ch));
+    if(t.length<2||/ご視聴ありがとう|チャンネル登録/.test(t)){setSt('idle');return}
+    ask(t);
+  }catch(e){setSt('idle');show('sys',String(e.message||e))}
 }
-$('bm').onclick=mic;
+async function stt(wav,retry){
+  const h={'content-type':'application/octet-stream'};
+  const pw=store.get('pw','');if(pw)h['x-pass']=pw;
+  const res=await fetch('/api/stt',{method:'POST',headers:h,body:wav});
+  if(res.status===401&&!retry){
+    const p=prompt('合言葉を入力してください');
+    if(p){store.set('pw',p);return stt(wav,true)}
+  }
+  if(res.status===404)throw new Error('api/stt.js が見つかりません。GitHubのapiフォルダに追加してください');
+  const j=await res.json().catch(()=>({}));
+  if(!res.ok)throw new Error(j.error||('文字起こしエラー '+res.status));
+  return String(j.text||'').trim();
+}
+function toWav(ch){
+  let n=0;ch.forEach(c=>n+=c.length);
+  const all=new Float32Array(n);let o=0;ch.forEach(c=>{all.set(c,o);o+=c.length});
+  const r=sr/16000,m=Math.floor(n/r),pcm=new Int16Array(m);
+  for(let i=0;i<m;i++){
+    const a=Math.floor(i*r),b=Math.max(a+1,Math.floor((i+1)*r));let s=0;
+    for(let k=a;k<b&&k<n;k++)s+=all[k];
+    const v=Math.max(-1,Math.min(1,s/(b-a)));pcm[i]=v<0?v*32768:v*32767;
+  }
+  const w=new DataView(new ArrayBuffer(44+m*2)),T=(p,t)=>{for(let i=0;i<t.length;i++)w.setUint8(p+i,t.charCodeAt(i))};
+  T(0,'RIFF');w.setUint32(4,36+m*2,true);T(8,'WAVE');T(12,'fmt ');w.setUint32(16,16,true);
+  w.setUint16(20,1,true);w.setUint16(22,1,true);w.setUint32(24,16000,true);w.setUint32(28,32000,true);
+  w.setUint16(32,2,true);w.setUint16(34,16,true);T(36,'data');w.setUint32(40,m*2,true);
+  new Int16Array(w.buffer,44,m).set(pcm);
+  return w.buffer;
+}
+$('bk').onclick=()=>micOn?micStop():micStart();
 
 $('bt').onclick=()=>{ti=(ti+1)%THN.length;store.set('ti',ti);applyTheme()};
 $('bc').onclick=()=>{
@@ -300,7 +322,7 @@ function fr(ms_){
   const t=ms_/1000,[c1,c2]=TH[THN[ti]];
   g.clearRect(0,0,W,H);
   let tl=0;
-  if(an){an.getByteFrequencyData(fd);let s=0;for(let i=0;i<48;i++)s+=fd[i];tl=Math.min(1,s/48/255*2.2)}
+  if(an&&(st==='idle'||st==='listen')){an.getByteFrequencyData(fd);let s=0;for(let i=0;i<48;i++)s+=fd[i];tl=Math.min(1,s/48/255*2.2)}
   else if(st==='listen')tl=.25+.2*Math.abs(Math.sin(t*5)*Math.sin(t*2.3));
   else if(st==='speak')tl=.3+.45*Math.abs(Math.sin(t*9)*Math.sin(t*3.1));
   else if(st==='think')tl=.12+.1*Math.sin(t*6);
@@ -320,7 +342,7 @@ function fr(ms_){
   const N=64;g.setLineDash([]);g.strokeStyle=c2;g.lineWidth=2.2;g.lineCap='round';
   for(let i=0;i<N;i++){
     const a=i/N*Math.PI*2-Math.PI/2,k=i<N/2?i:N-1-i;
-    const v=fd?fd[k*2]/255:(.05+lv*(.4+.6*Math.abs(Math.sin(t*8+k*.7))));
+    const v=(fd&&(st==='idle'||st==='listen'))?fd[k*2]/255:(.05+lv*(.4+.6*Math.abs(Math.sin(t*8+k*.7))));
     const r0=R*.62,r1=r0+R*.22*(v+.06);
     g.globalAlpha=.35+v*.65;g.beginPath();
     g.moveTo(cx+Math.cos(a)*r0,cy+Math.sin(a)*r0);
